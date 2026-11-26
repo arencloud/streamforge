@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.streamforge</groupId><artifactId>camel-s3</artifactId><version>0.1.0</version>
+  <name>Streamforge Camel S3 showcase</name>
+  <licenses><license><name>Apache License 2.0</name><url>https://www.apache.org/licenses/LICENSE-2.0</url></license></licenses>
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <quarkus.platform.version>3.27.6.SP3-redhat-00002</quarkus.platform.version>
+  </properties>
+  <repositories>
+    <repository><id>redhat-ga</id><url>https://maven.repository.redhat.com/ga/</url><releases><enabled>true</enabled></releases><snapshots><enabled>false</enabled></snapshots></repository>
+  </repositories>
+  <pluginRepositories>
+    <pluginRepository><id>redhat-ga</id><url>https://maven.repository.redhat.com/ga/</url><releases><enabled>true</enabled></releases><snapshots><enabled>false</enabled></snapshots></pluginRepository>
+  </pluginRepositories>
+  <dependencyManagement><dependencies>
+    <dependency><groupId>com.redhat.quarkus.platform</groupId><artifactId>quarkus-bom</artifactId><version>${quarkus.platform.version}</version><type>pom</type><scope>import</scope></dependency>
+    <dependency><groupId>com.redhat.quarkus.platform</groupId><artifactId>quarkus-camel-bom</artifactId><version>${quarkus.platform.version}</version><type>pom</type><scope>import</scope></dependency>
+  </dependencies></dependencyManagement>
+  <dependencies>
+    <dependency><groupId>org.apache.camel.quarkus</groupId><artifactId>camel-quarkus-kafka</artifactId></dependency>
+    <dependency><groupId>org.apache.camel.quarkus</groupId><artifactId>camel-quarkus-aws2-s3</artifactId></dependency>
+    <dependency><groupId>org.apache.camel.quarkus</groupId><artifactId>camel-quarkus-jackson</artifactId></dependency>
+    <dependency><groupId>org.apache.camel.quarkus</groupId><artifactId>camel-quarkus-microprofile-health</artifactId></dependency>
+    <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-micrometer-registry-prometheus</artifactId></dependency>
+    <dependency><groupId>software.amazon.awssdk</groupId><artifactId>apache-client</artifactId></dependency>
+    <dependency><groupId>org.apache.camel.quarkus</groupId><artifactId>camel-quarkus-direct</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.mockito</groupId><artifactId>mockito-core</artifactId><scope>test</scope></dependency>
+  </dependencies>
+  <build>
+    <resources>
+      <resource><directory>src/main/resources</directory></resource>
+      <resource><directory>..</directory><targetPath>META-INF</targetPath><includes><include>LICENSE</include><include>NOTICE</include></includes></resource>
+    </resources>
+    <plugins>
+    <plugin><groupId>com.redhat.quarkus.platform</groupId><artifactId>quarkus-maven-plugin</artifactId><version>${quarkus.platform.version}</version><extensions>true</extensions><executions><execution><goals><goal>build</goal><goal>generate-code</goal><goal>generate-code-tests</goal></goals></execution></executions></plugin>
+    <plugin><artifactId>maven-compiler-plugin</artifactId><version>3.14.0</version></plugin>
+    <plugin><artifactId>maven-surefire-plugin</artifactId><version>3.5.3</version></plugin>
+  </plugins></build>
+</project>

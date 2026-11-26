@@ -1,0 +1,49 @@
+name: validate
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.12'}
+      - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with: {version: v3.17.3}
+      - run: pip install -r scripts/requirements.txt
+      - run: helm lint charts/streamforge
+      - run: python scripts/validate.py -f environments/example/values.yaml
+      - run: python scripts/scan-secrets.py
+      - run: python scripts/check-public.py
+      - run: python scripts/test-publication-guards.py
+      - run: python scripts/check-docs.py
+      - run: python scripts/check-vault-layout.py
+      - run: python scripts/validate-dashboard.py
+      - run: python scripts/validate-edge.py
+  camel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            camel-s3/pom.xml
+            camel-connect/pom.xml
+            order-dashboard/pom.xml
+      - run: mvn -B -ntp -f camel-s3/pom.xml verify
+      - run: mvn -B -ntp -f camel-connect/pom.xml verify
+      - run: mvn -B -ntp -f order-dashboard/pom.xml verify
+  dashboard-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: npm --prefix order-dashboard/tests ci
+      - run: npm exec --prefix order-dashboard/tests -- playwright install --with-deps chromium
+      - run: npm --prefix order-dashboard/tests run test:regression

@@ -1,0 +1,96 @@
+{{- $users := list "source" }}
+{{- if has .Values.mode (list "aiven" "both" "all") }}{{ $users = append $users "aiven" }}{{ end }}
+{{- if has .Values.mode (list "camel" "both" "all") }}{{ $users = append $users "camel" }}{{ end }}
+{{- if has .Values.mode (list "camel-connect" "all") }}{{ $users = append $users "camel-connect" }}{{ end }}
+{{- range $user := $users }}
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: {{ if eq $user "camel" }}camel-s3{{ else }}connect-{{ $user }}{{ end }}
+  labels:
+    strimzi.io/cluster: {{ $.Values.clusterName }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: {{ $user }}-auth
+          key: password
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: {{ $.Values.postgres.topic }}
+          patternType: literal
+        operations: [Describe, {{ if eq $user "source" }}Write{{ else }}Read{{ end }}]
+        host: "*"
+      {{- if ne $user "camel" }}
+      - resource:
+          type: topic
+          name: connect-{{ $user }}-
+          patternType: prefix
+        operations: [Read, Write, Describe]
+        host: "*"
+      - resource:
+          type: group
+          name: connect-{{ $user }}
+          patternType: literal
+        operations: [Read, Describe]
+        host: "*"
+      {{- end }}
+      {{- if eq $user "source" }}
+      - resource:
+          type: topic
+          name: __debezium-heartbeat.{{ $.Values.postgres.topicPrefix }}
+          patternType: literal
+        operations: [Write, Describe]
+        host: "*"
+      {{- else }}
+      - resource:
+          type: group
+          name: {{ if eq $user "aiven" }}connect-aiven-s3{{ else if eq $user "camel-connect" }}connect-camel-connect-s3{{ else }}camel-s3{{ end }}
+          patternType: literal
+        operations: [Read, Describe]
+        host: "*"
+      {{- end }}
+      {{- if ne $user "camel" }}
+      - resource: {type: cluster}
+        operations: [IdempotentWrite]
+        host: "*"
+      {{- end }}
+---
+{{- end }}
+{{- $topics := list (dict "name" .Values.postgres.topic "partitions" 6 "compact" false) }}
+{{- $topics = append $topics (dict "name" (printf "__debezium-heartbeat.%s" .Values.postgres.topicPrefix) "resourceName" "source-heartbeat" "partitions" 1 "compact" true) }}
+{{- range $user := $users }}
+{{- if ne $user "camel" }}
+{{- range $type := list "config" "offset" "status" }}
+{{- $topics = append $topics (dict "name" (printf "connect-%s-%s" $user $type) "partitions" (ternary 1 6 (eq $type "config")) "compact" true) }}
+{{- end }}{{ end }}{{ end }}
+{{- range $topics }}
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: {{ .resourceName | default .name }}
+  labels:
+    strimzi.io/cluster: {{ $.Values.clusterName }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  topicName: {{ .name | quote }}
+  partitions: {{ .partitions }}
+  replicas: 3
+  config:
+    min.insync.replicas: 2
+    cleanup.policy: {{ if .compact }}compact{{ else }}delete{{ end }}
+    {{- if not .compact }}
+    retention.ms: {{ $.Values.kafka.retentionMs }}
+    retention.bytes: 10737418240
+    {{- end }}
+---
+{{- end }}

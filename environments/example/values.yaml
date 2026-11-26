@@ -1,0 +1,21 @@
+# Public, deliberately non-deployable example. Copy into your private configuration repository.
+# The chart provides defaults for all remaining options.
+issuer: vault-cluster-issuer
+secretStore: vault-cluster-store
+vaultPrefix: streamforge
+mesh:
+  discoveryLabelKey: mesh.example.com/member
+  discoveryLabel: platform
+  trustDomain: cluster.local
+kafka:
+  storageClass: kafka-block-storage
+network:
+  postgresPort: 5432 # Match PG_PORT from the PostgreSQL Vault entry.
+  apiCidrs: [192.0.2.1/32]
+  postgresCidrs: [192.0.2.10/32]
+  s3Cidrs: # Imported from S3_EGRESS_CIDRS in each sink entry.
+    aiven: [192.0.2.20/32]
+    camel: [192.0.2.21/32]
+    camel-connect: [192.0.2.22/32]
+# Replace all four build-required image references from chart defaults with your
+# published multi-platform image digests. Keep registry organization names private.

@@ -1,0 +1,155 @@
+{{- $workers := list "source" }}
+{{- if has .Values.mode (list "aiven" "both" "all") }}{{ $workers = append $workers "aiven" }}{{ end }}
+{{- if has .Values.mode (list "camel-connect" "all") }}{{ $workers = append $workers "camel-connect" }}{{ end }}
+{{- range $worker := $workers }}
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnect
+metadata:
+  name: connect-{{ $worker }}
+  annotations:
+    strimzi.io/use-connector-resources: "true"
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  version: {{ $.Values.kafka.version | quote }}
+  replicas: {{ $.Values.connect.replicas }}
+  image: {{ if eq $worker "source" }}{{ $.Values.connect.sourceImage | quote }}{{ else if eq $worker "aiven" }}{{ $.Values.connect.aivenImage | quote }}{{ else }}{{ $.Values.connect.camelImage | quote }}{{ end }}
+  bootstrapServers: {{ $.Values.clusterName }}-kafka-bootstrap:9093
+  groupId: connect-{{ $worker }}
+  configStorageTopic: connect-{{ $worker }}-config
+  offsetStorageTopic: connect-{{ $worker }}-offset
+  statusStorageTopic: connect-{{ $worker }}-status
+  authentication:
+    type: scram-sha-512
+    username: connect-{{ $worker }}
+    passwordSecret: {secretName: {{ $worker }}-auth, password: password}
+  tls:
+    trustedCertificates:
+      - secretName: external-trust
+        certificate: kafka-ca.crt
+  resources:
+    {{- toYaml $.Values.connect.resources | nindent 4 }}
+  jvmOptions:
+    "-Xms": 512m
+    "-Xmx": 1g
+    {{- if $.Values.network.preferIPv6 }}
+    javaSystemProperties:
+      - {name: java.net.preferIPv4Stack, value: "false"}
+      - {name: java.net.preferIPv6Addresses, value: "true"}
+    {{- end }}
+  config:
+    config.storage.replication.factor: 3
+    offset.storage.replication.factor: 3
+    status.storage.replication.factor: 3
+    offset.flush.interval.ms: 10000
+    connector.client.config.override.policy: None
+    key.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable: false
+    value.converter.schemas.enable: false
+    config.providers: env
+    config.providers.env.class: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+    config.providers.env.param.allowlist.pattern: "^(PG_USER|PG_PASSWORD|PG_HOST|PG_PORT|PG_DATABASE|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|S3_ENDPOINT|S3_REGION|S3_BUCKET|S3_PATH_STYLE)$"
+    producer.acks: all
+    producer.enable.idempotence: true
+    consumer.auto.offset.reset: earliest
+    {{- if eq $worker "camel-connect" }}
+    consumer.max.poll.records: 1
+    consumer.max.poll.interval.ms: 300000
+    {{- end }}
+    topic.creation.enable: false
+  metricsConfig:
+    type: jmxPrometheusExporter
+    valueFrom:
+      configMapKeyRef: {name: streamforge-metrics, key: connect.yml}
+  template:
+    {{- if $.Values.mesh.enabled }}
+    apiService:
+      metadata:
+        labels:
+          istio.io/use-waypoint: {{ $.Values.mesh.waypointName }}
+    headlessService:
+      metadata:
+        labels:
+          istio.io/use-waypoint: {{ $.Values.mesh.waypointName }}
+    {{- end }}
+    podDisruptionBudget: {maxUnavailable: 1}
+    pod:
+      metadata:
+        labels:
+          {{- include "sf.labels" $ | nindent 10 }}
+          {{- if $.Values.mesh.enabled }}
+          # Connect worker REST forwarding uses direct pod addresses too.
+          istio.io/use-waypoint: {{ $.Values.mesh.waypointName }}
+          streamforge.io/require-waypoint: "true"
+          {{- end }}
+          {{- if ne $worker "source" }}
+          streamforge.io/s3-client: "true"
+          {{- end }}
+        annotations:
+          {{- if $.Values.connect.preferNoEviction }}
+          descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+          {{- end }}
+          streamforge.io/rotation-revision: {{ $.Values.rotationRevision | quote }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "sf.podSecurity" $ | nindent 8 }}
+      affinity:
+        {{- include "sf.workerAffinity" $ | nindent 8 }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  strimzi.io/cluster: connect-{{ $worker }}
+      volumes:
+        {{- if eq $worker "source" }}
+        - name: postgres-ca
+          secret:
+            secretName: postgres-credentials
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- else }}
+        - name: s3-ca
+          secret:
+            secretName: s3-{{ $worker }}
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- end }}
+    connectContainer:
+      securityContext:
+        {{- include "sf.containerSecurity" $ | nindent 8 }}
+      volumeMounts:
+        {{- if eq $worker "source" }}
+        - {name: postgres-ca, mountPath: /mnt/postgres-ca, readOnly: true}
+        {{- else }}
+        - {name: s3-ca, mountPath: /mnt/s3-ca, readOnly: true}
+        {{- end }}
+      env:
+        {{- if eq $worker "source" }}
+        - name: PG_USER
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: username}}
+        - name: PG_PASSWORD
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: password}}
+        - name: PG_HOST
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: host}}
+        - name: PG_PORT
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: port}}
+        - name: PG_DATABASE
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: database}}
+        {{- else }}
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom: {secretKeyRef: {name: s3-{{ $worker }}, key: access-key-id}}
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom: {secretKeyRef: {name: s3-{{ $worker }}, key: secret-access-key}}
+        - name: S3_ENDPOINT
+          valueFrom: {secretKeyRef: {name: s3-{{ $worker }}, key: endpoint}}
+        - name: S3_REGION
+          valueFrom: {secretKeyRef: {name: s3-{{ $worker }}, key: region}}
+        - name: S3_BUCKET
+          valueFrom: {secretKeyRef: {name: s3-{{ $worker }}, key: bucket}}
+        - name: S3_PATH_STYLE
+          valueFrom: {secretKeyRef: {name: s3-{{ $worker }}, key: path-style}}
+        {{- end }}
+---
+{{- end }}

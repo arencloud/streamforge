@@ -1,0 +1,235 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: internal-streamforge
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - {protocol: TCP, port: 9090}
+        - {protocol: TCP, port: 9091}
+        - {protocol: TCP, port: 9093}
+        - {protocol: TCP, port: 8083}
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 9404}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.network.operatorNamespace }}
+      ports:
+        - {protocol: TCP, port: 9090}
+        - {protocol: TCP, port: 9091}
+        - {protocol: TCP, port: 9093}
+        - {protocol: TCP, port: 8083}
+  egress:
+    - to:
+        - podSelector: {}
+      ports:
+        - {protocol: TCP, port: 9090}
+        - {protocol: TCP, port: 9091}
+        - {protocol: TCP, port: 9093}
+        - {protocol: TCP, port: 8083}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: openshift-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-api
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  # Streams Kafka config providers retrieve operator-managed configuration at startup.
+  podSelector:
+    matchLabels:
+      strimzi.io/name: {{ .Values.clusterName }}-kafka
+      strimzi.io/cluster: {{ .Values.clusterName }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.network.apiCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 6443}
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: connect-api
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  # Streams Connect workers retrieve their TLS/SASL configuration through the API.
+  podSelector:
+    matchLabels:
+      strimzi.io/kind: KafkaConnect
+    matchExpressions:
+      - key: strimzi.io/cluster
+        operator: In
+        values: [connect-source, connect-aiven, connect-camel-connect]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.network.apiCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 6443}
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entity-operator-api
+spec:
+  podSelector:
+    matchLabels:
+      strimzi.io/name: {{ .Values.clusterName }}-entity-operator
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.network.apiCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 6443}
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: source-postgres
+spec:
+  podSelector:
+    matchLabels: {strimzi.io/cluster: connect-source}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.network.postgresCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.network.postgresPort }}}
+---
+{{- $sinks := list }}
+{{- if has .Values.mode (list "aiven" "both" "all") }}{{ $sinks = append $sinks "aiven" }}{{ end }}
+{{- if has .Values.mode (list "camel" "both" "all") }}{{ $sinks = append $sinks "camel" }}{{ end }}
+{{- if has .Values.mode (list "camel-connect" "all") }}{{ $sinks = append $sinks "camel-connect" }}{{ end }}
+{{- range $sinks }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ . }}-s3-egress
+spec:
+  podSelector:
+    matchLabels:
+      {{- if eq . "camel" }}
+      app: camel-s3
+      {{- else }}
+      strimzi.io/cluster: connect-{{ . }}
+      {{- end }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range (index $.Values.network.s3Cidrs .) }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 443}
+---
+{{- end }}
+{{- if .Values.monitoring.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.monitoringNamespace }}}
+      ports:
+        - {protocol: TCP, port: 9404}
+        - {protocol: TCP, port: 8080}
+{{- end }}
+---
+{{- if .Values.mesh.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ambient-hbone
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.network.operatorNamespace }}}
+        {{- if .Values.monitoring.enabled }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.monitoringNamespace }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 15008}]
+    # Ambient's kubelet probe SNAT addresses, including this IPv6 platform.
+    - from:
+        - ipBlock: {cidr: 169.254.7.127/32}
+        - ipBlock: {cidr: "fd16:9254:7127:1337:ffff:ffff:ffff:ffff/128"}
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}
+        - {protocol: TCP, port: 8083}
+        - {protocol: TCP, port: 9404}
+        - {protocol: TCP, port: 15021}
+  egress:
+    - to:
+        - podSelector: {}
+      ports:
+        - {protocol: TCP, port: 15008}
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 9404}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: waypoint-control-plane
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  podSelector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ .Values.mesh.waypointName }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.controlPlaneNamespace }}}
+      ports: [{protocol: TCP, port: 15012}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.certificateNamespace }}}
+      # Permit the mesh-provided CA endpoint under default-deny egress.
+      # This does not select an Issuer or configure waypoint certificates.
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]
+{{- end }}

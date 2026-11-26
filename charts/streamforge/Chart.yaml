@@ -1,0 +1,7 @@
+apiVersion: v2
+name: streamforge
+description: Vault-backed Kafka CDC with Aiven and Red Hat Camel Quarkus S3 showcases
+type: application
+version: 0.1.1
+appVersion: "4.2.0"
+kubeVersion: ">=1.30.0-0"

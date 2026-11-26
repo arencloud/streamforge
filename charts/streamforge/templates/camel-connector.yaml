@@ -1,0 +1,26 @@
+{{- if has .Values.mode (list "camel-connect" "all") }}
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnector
+metadata:
+  name: camel-connect-s3
+  labels:
+    strimzi.io/cluster: connect-camel-connect
+  annotations: {argocd.argoproj.io/sync-wave: "3"}
+spec:
+  class: com.streamforge.connect.CamelS3SinkConnector
+  tasksMax: 3
+  autoRestart: {enabled: true, maxRestarts: 10}
+  config:
+    topics: {{ .Values.postgres.topic | quote }}
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.storage.StringConverter
+    s3.endpoint: "${env:S3_ENDPOINT}"
+    s3.region: "${env:S3_REGION}"
+    s3.bucket: "${env:S3_BUCKET}"
+    s3.prefix: {{ .Values.s3.camelConnectPrefix | quote }}
+    s3.path.style: "${env:S3_PATH_STYLE}"
+    s3.ca.path: /mnt/s3-ca/ca.crt
+    errors.tolerance: none
+    errors.log.enable: false
+    errors.log.include.messages: false
+{{- end }}

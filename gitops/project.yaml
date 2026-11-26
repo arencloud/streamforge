@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: streamforge
+  namespace: argocd
+spec:
+  description: Streamforge Kafka CDC for a privately configured target environment
+  sourceRepos:
+    - https://github.com/example/streamforge.git
+    - https://git.example.invalid/platform/streamforge-environments.git
+  destinations:
+    - server: https://api.cluster.example.invalid:6443
+      namespace: streamforge
+    - server: https://api.cluster.example.invalid:6443
+      namespace: streamforge-identity
+  clusterResourceWhitelist:
+    - {group: "", kind: Namespace}
+  namespaceResourceWhitelist:
+    - {group: "", kind: ConfigMap}
+    - {group: "", kind: Service}
+    - {group: "", kind: ServiceAccount}
+    - {group: "", kind: ResourceQuota}
+    - {group: "", kind: LimitRange}
+    - {group: apps, kind: Deployment}
+    - {group: policy, kind: PodDisruptionBudget}
+    - {group: networking.k8s.io, kind: NetworkPolicy}
+    - {group: gateway.networking.k8s.io, kind: Gateway}
+    - {group: security.istio.io, kind: PeerAuthentication}
+    - {group: security.istio.io, kind: AuthorizationPolicy}
+    - {group: cert-manager.io, kind: Certificate}
+    - {group: external-secrets.io, kind: ExternalSecret}
+    - {group: kafka.strimzi.io, kind: Kafka}
+    - {group: kafka.strimzi.io, kind: KafkaNodePool}
+    - {group: kafka.strimzi.io, kind: KafkaUser}
+    - {group: kafka.strimzi.io, kind: KafkaTopic}
+    - {group: kafka.strimzi.io, kind: KafkaConnect}
+    - {group: kafka.strimzi.io, kind: KafkaConnector}
+    - {group: monitoring.coreos.com, kind: PodMonitor}
+    - {group: monitoring.coreos.com, kind: ServiceMonitor}
+    - {group: monitoring.coreos.com, kind: PrometheusRule}
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute}
+    - {group: kuadrant.io, kind: AuthPolicy}
+    - {group: kuadrant.io, kind: RateLimitPolicy}
+    - {group: kuadrant.io, kind: TLSPolicy}
+    - {group: extensions.istio.io, kind: WasmPlugin}
+    - {group: networking.istio.io, kind: DestinationRule}
+    - {group: k8s.keycloak.org, kind: Keycloak}
+    - {group: k8s.keycloak.org, kind: KeycloakRealmImport}
+  orphanedResources: {warn: true}

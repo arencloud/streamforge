@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  labels:
+    app.kubernetes.io/part-of: streamforge
+    openshift.io/user-monitoring: "true"
+    {{- if .Values.mesh.enabled }}
+    {{ .Values.mesh.discoveryLabelKey | quote }}: {{ .Values.mesh.discoveryLabel | quote }}
+    istio.io/dataplane-mode: ambient
+    # Waypoint enrollment is per Service/pod, not namespace-wide: Kafka's
+    # replication and controller connections must not traverse the waypoint.
+    {{- end }}

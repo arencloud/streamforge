@@ -1,0 +1,103 @@
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata: {name: streamforge-edge-deny}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: Gateway, name: {{ .Values.gatewayName }}}
+  defaults:
+    strategy: atomic
+    rules:
+      authentication:
+        context: {anonymous: {}}
+      authorization:
+        deny:
+          patternMatching:
+            patterns: [{selector: context.request.http.method, operator: eq, value: __DENY__}]
+---
+{{- if .Values.dashboardRoutesEnabled }}
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata: {name: streamforge-api}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: HTTPRoute, name: streamforge-api}
+  rules:
+    authentication:
+      keycloak:
+        jwt:
+          # STRICT mesh mTLS protects internal JWKS transport; verify the public issuer independently.
+          jwksUrl: http://keycloak-service.{{ .Values.identityNamespace }}.svc.cluster.local:8080/realms/{{ .Values.realm }}/protocol/openid-connect/certs
+          issuer: https://{{ .Values.identityHostname }}/realms/{{ .Values.realm }}
+          audiences: [{{ .Values.clientId | quote }}]
+          timeout: 5000
+          maxResponseBytes: 65536
+    authorization:
+      roles:
+        opa:
+          version: v0
+          rego: |
+            import rego.v1
+            roles := input.auth.identity.realm_access.roles
+            method := input.context.request.http.method
+            operator if { "streamforge-operator" in roles }
+            viewer if { "streamforge-viewer" in roles }
+            viewer if { operator }
+            allow if { method == "GET"; viewer }
+            allow if { method in {"POST", "PATCH"}; operator }
+---
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata: {name: streamforge-api}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: HTTPRoute, name: streamforge-api}
+  limits:
+    read:
+      when: [{predicate: "request.method == 'GET'"}]
+      counters: [{expression: auth.identity.sub}]
+      rates: [{limit: {{ .Values.rateLimits.apiRead }}, window: 1m}]
+    write:
+      when: [{predicate: "request.method == 'POST' || request.method == 'PATCH'"}]
+      counters: [{expression: auth.identity.sub}]
+      rates: [{limit: {{ .Values.rateLimits.apiWrite }}, window: 1m}]
+    source:
+      # Envoy reports IPv4:port or [IPv6]:port; aggregate across connections.
+      counters:
+        - expression: >-
+            source.address.substring(0, source.address.lastIndexOf(':')).replace('[', '').replace(']', '')
+      rates: [{limit: 1200, window: 1m}]
+---
+{{- end }}
+{{- $routes := list "streamforge-edge-readiness" "streamforge-identity" }}
+{{- if .Values.dashboardRoutesEnabled }}{{ $routes = append $routes "streamforge-web" }}{{ end }}
+{{- range $route := $routes }}
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: {{ $route }}
+  {{- if eq $route "streamforge-identity" }}
+  namespace: {{ $.Values.identityNamespace }}
+  {{- end }}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: HTTPRoute, name: {{ $route }}}
+  rules:
+    authentication:
+      public: {anonymous: {}}
+---
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata:
+  name: {{ $route }}
+  {{- if eq $route "streamforge-identity" }}
+  namespace: {{ $.Values.identityNamespace }}
+  {{- end }}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: HTTPRoute, name: {{ $route }}}
+  limits:
+    source:
+      # Envoy reports IPv4:port or [IPv6]:port; aggregate across connections.
+      counters:
+        - expression: >-
+            source.address.substring(0, source.address.lastIndexOf(':')).replace('[', '').replace(']', '')
+      rates:
+        - limit: {{ if eq $route "streamforge-edge-readiness" }}1200{{ else if eq $route "streamforge-identity" }}{{ $.Values.rateLimits.identity }}{{ else }}{{ $.Values.rateLimits.public }}{{ end }}
+          window: 1m
+---
+{{- end }}

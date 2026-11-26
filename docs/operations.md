@@ -1,0 +1,46 @@
+# Delivery, recovery and production acceptance
+
+## Retry and offset contract
+
+Both custom implementations retain the Debezium envelope, including the original record key, before/after data and delete operation. S3 keys include topic, partition and Kafka offset, not wall-clock time or only the database key.
+
+**Quarkus:** the AWS client has a 20-second attempt/45-second API-call timeout. Camel retries the failed processing step twice with exponential delay and jitter, synchronously on the Kafka consumer thread. It commits manually only after a successful S3 write. On exhaustion the exchange remains failed; Camel's explicitly selected `DefaultKafkaManualCommitFactory` selects `SyncCommitManager`, which seeks back to the failed offset with `breakOnFirstError=true`. `maxPollRecords=1` and a 300-second poll interval bound normal retry work below the rebalance timeout. Never add an async/split/parallel EIP before the commit without redesigning offset management. Retrying a commit after a successful S3 PUT may replay the same object safely.
+
+**Custom Kafka Connect:** `put()` performs synchronous Camel AWS2 S3 writes. A partial-batch failure throws `RetriableException`; the Connect worker retains/retries that batch and must not commit past it. `context.timeout()` applies exponential backoff with equal jitter, from 0.5–1 second up to 15–30 seconds. Successful batches reset the failure counter. AWS call timeouts are the same as above; the worker consumes at most one record per poll. This design needs no asynchronous flush buffer; the inherited flush/preCommit behavior is valid only because `put()` returns after all writes finish. No custom offset commit or `requestCommit()` is performed. Kafka API/client classes are provided by the worker and excluded from the plugin bundle.
+
+Malformed JSON/type mismatches fail closed (`DataException`), with `errors.tolerance=none`; no automatic DLQ or discard path is enabled. Prolonged storage/auth failures retain offsets and accumulate Kafka lag. This is intentional; fix the cause or explicitly approve a separate quarantine/replay procedure. Connect's `errors.retry.*` settings for converters/SMTs do not replace this sink retry protocol. AutoRestart is capped at ten attempts for failed tasks; running retriable tasks continue retrying. A restart resets the in-memory backoff, not durable offsets.
+
+**Aiven:** uses its own SDK/upload retry and Connect flush lifecycle. No custom source change is applied. The pinned release's implementation and behavior must be qualified with the actual S3 provider. All three options are at least once. A deterministic object key makes retries overwrite the current object; it does not make Kafka and S3 transactional, eliminate source duplicates at different offsets, or prevent extra versions in a versioned bucket.
+
+## Monitoring and recovery
+
+- Watch under-replicated/offline partitions, min ISR, disk utilization, consumer lag, failed Connect tasks and Camel failure counters. Consumer lag catches repeated custom-Connect retries even while task status remains RUNNING. Add an absence/last-delivered-record alert appropriate to the expected business traffic; a quiet table alone is not an outage signal.
+- The provided Prometheus rules require the associated exporter metrics. PVC/cert-manager series are emitted by platform exporters and may not be queryable from user-workload Prometheus without federation. Verify rule data visibility and alert routing; an empty vector is not a passing health check. Ensure certificate and ESO renewal failures are covered by platform alerts.
+- Run `showcase/03-observe-postgres.sql` from monitoring. Alert on WAL retained by the slot and `safe_wal_size`; set `max_slot_wal_keep_size` with the DBA. A lost/invalidated slot requires a controlled resnapshot and downstream duplicate handling. Never auto-drop a slot because a connector is temporarily down.
+- Kafka topic retention is seven days **or 10 GiB per partition, whichever is reached first**. Size it from actual ingress and maximum tolerated sink outage. Alert well before lag reaches the retention boundary; retry cannot recover records already deleted from Kafka.
+- Broker loss: retain/re-attach the existing PVC where safe and let Streams reconcile. Never reuse a controller volume in a different cluster identity. Do not delete a majority of controller PVCs. Run planned disruption one worker at a time and respect PDBs.
+- With exactly three workers, hard anti-affinity leaves no spare scheduling slot. The conservative cluster PDB can block draining a worker that hosts both a broker and a controller. Add a temporary fourth worker for fully rescheduled maintenance, or design and test separate per-role disruption budgets as a reviewed change; do not force-drain past quorum protections.
+- Replay: stop the affected sink, record its offsets, choose a retained offset boundary and use an approved Kafka admin identity to reset only that consumer group. Restart and compare the expected object identities. Source replay/slot recovery is a separate operation; do not reset source offsets as a sink repair.
+- Upgrade: promote tested operator/Kafka mappings, image digests and BOMs separately. Verify broker health before changing metadata version. A Git revert is not a guarantee of a valid Kafka metadata or connector-offset-format downgrade.
+- Disaster recovery needs a separate Kafka/metadata replication or backup strategy and external PostgreSQL backups. S3 CDC export is not a drop-in restore of Kafka's internal topics or KRaft metadata. Keep connector group/config/offset/status topic identities stable across ordinary redeployments.
+
+## Acceptance gates
+
+The repository is a baseline until these checks pass in the intended environment:
+
+1. Confirm OpenShift/Streams/Debezium/Camel vendor compatibility, entitled image pulls and scanned/signed release images/SBOMs. Confirm the custom Connect adapter's ownership; Red Hat-built libraries do not make that adapter a Red Hat-supported connector. Red Hat's historical packaged Camel Kafka Connector was Technology Preview, not the adapter implemented here.
+2. Confirm Vault KV policy, namespace RBAC, Kubernetes/block-storage/S3 encryption at rest, S3 prefix IAM, provider multipart/HeadBucket behavior and certificate issuance. Validate rejected hostname/unknown-CA connections and a negative Kafka ACL test using a dedicated test identity.
+3. Validate API, DNS, operator REST and external egress under default-deny policies, including IPv6 API destinations where applicable. Reconfirm endpoint CIDRs after platform changes. Verify broker TLS SANs, SCRAM identity and min ISR. Complete the [ambient/HTTP waypoint acceptance checks](service-mesh.md): Kafka must remain off the waypoint; verify STRICT mTLS, authenticated callers, direct-pod HTTP bypass denial and monitoring capture.
+4. Measure storage fsync latency/IOPS, usable capacity and shared failure domains; verify current scheduling requests and rolling-update headroom. Set a business RPO/RTO and load-test sustained/peak throughput with representative record sizes. Quarkus/custom Connect one-object-per-record may need a separately designed batch writer for production scale.
+5. Run snapshot, insert/update/delete, independent three-way consumption and payload comparison. Kill sink processes around PUT/commit, interrupt S3, exercise 429/5xx and permission failures, then verify no missing records and expected duplicates. Validate rebalance during delivery and retries, not just unit tests.
+6. Test worker loss, controller quorum, one-at-a-time drains, PVC retention, Kafka restart and Connect failover. Demonstrate a sink outage shorter than retention and a documented recovery path for one longer than retention.
+7. Exercise leaf, root and credential rotation with overlap and consumer restarts. Confirm delivery resumes, alerts fire/resolve and no credential/data appears in logs.
+8. Confirm Argo readiness customizations, immutable release promotion, drift detection, deletion protections and recovery documentation. Approve expected capacity, cost and support boundaries before enabling automated self-healing.
+
+Reference: [Red Hat's Camel Kafka Connector support limitation](https://docs.redhat.com/en/documentation/red_hat_integration/2021.q1/html-single/release_notes_for_red_hat_integration_2021.q1/index), [Kafka SinkTask API](https://kafka.apache.org/42/javadoc/org/apache/kafka/connect/sink/SinkTask.html), [Camel SyncCommitManager](https://github.com/apache/camel/blob/camel-4.14.0/components/camel-kafka/src/main/java/org/apache/camel/component/kafka/consumer/SyncCommitManager.java).
+
+## Listener key encoding
+
+The Kafka PEM loader requires the listener private key in PKCS#8 format. The chart explicitly sets `Certificate.spec.privateKey.encoding: PKCS8`. An older deployment with the default PKCS#1 encoding can fail with `Invalid PEM keystore configs` and `algid parse error` even while its Certificate reports Ready.
+
+After syncing the corrected Certificate, use `cmctl renew kafka-listener -n streamforge` if the existing certificate has not been renewed. Confirm a new CertificateRequest is Ready and the Certificate revision advances. Let Streams reconcile and roll the brokers; do not export, hand-convert or commit private keys. This uses the existing cert-manager/Vault issuer workflow.

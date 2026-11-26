@@ -1,0 +1,14 @@
+.git
+.local
+environments/private
+.idea
+.env*
+**/*.pem
+**/*.key
+**/*.kubeconfig
+**/target
+!camel-connect/target
+!camel-connect/target/camel-connect-s3-0.1.0.jar
+!camel-connect/target/lib
+!camel-connect/target/lib/**
+**/values.local.*

@@ -1,0 +1,106 @@
+# These defaults render a reviewable reference. Release validation rejects example.invalid images/endpoints.
+clusterName: streamforge
+mode: all # aiven | camel | camel-connect | both (Aiven + Quarkus) | all
+issuer: vault-cluster-issuer
+secretStore: vault-cluster-store
+vaultPrefix: streamforge
+rotationRevision: "1" # Increment after secret/certificate renewal to roll consumers through GitOps.
+mesh:
+  preferNoEviction: false
+  waypointAntiAffinity: required
+  enabled: true
+  discoveryLabelKey: mesh.example.com/member
+  discoveryLabel: platform
+  trustDomain: cluster.local
+  istioName: default
+  cniName: default
+  ztunnelName: default
+  waypointName: streamforge-waypoint
+  waypointReplicas: 2
+  controlPlaneNamespace: istio-system
+  # Egress permission only. The mesh automatically supplies the waypoint CA endpoint.
+  certificateNamespace: istio-csr
+  operatorServiceAccount: strimzi-cluster-operator
+  monitoringNamespace: openshift-user-workload-monitoring
+  monitoringServiceAccount: prometheus-user-workload
+  waypointResources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+kafka:
+  # Use preferred only for environments that accept co-located replicas.
+  antiAffinity: required
+  preferNoEviction: false
+  version: "4.2.0"
+  metadataVersion: "4.2-IV1"
+  storageClass: kafka-block-storage
+  brokerStorage: 200Gi
+  controllerStorage: 20Gi
+  brokerResources:
+    requests: {cpu: "2", memory: 4Gi}
+    limits: {cpu: "4", memory: 6Gi}
+  controllerResources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {cpu: "2", memory: 2Gi}
+  retentionMs: 604800000
+connect:
+  preferNoEviction: false
+  sourceImage: registry.example.invalid/streamforge/connect-debezium:build-required
+  aivenImage: registry.example.invalid/streamforge/connect-aiven:build-required
+  camelImage: registry.example.invalid/streamforge/connect-camel:build-required
+  replicas: 2
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {cpu: "2", memory: 2Gi}
+postgres:
+  # Host, database, credentials and runtime port come from Vault.
+  table: public.orders
+  slot: streamforge_orders
+  publication: streamforge_orders
+  topicPrefix: sf
+  topic: sf.public.orders
+s3:
+  # Endpoint, region, bucket, path style and CA come from each sink's Vault entry.
+  # Provider must enforce encryption at rest and deny non-TLS requests.
+  aivenPrefix: aiven/
+  camelPrefix: camel/
+  camelConnectPrefix: camel-connect/
+camel:
+  rolloutMaxUnavailable: 0
+  antiAffinity: required
+  preferNoEviction: false
+  image: registry.example.invalid/streamforge/camel-s3:build-required
+  replicas: 2
+  resources:
+    requests: {cpu: 250m, memory: 384Mi}
+    limits: {cpu: "1", memory: 768Mi}
+network:
+  preferIPv6: false
+  operatorNamespace: streams-kafka-operator
+  postgresPort: 5432 # Must match PG_PORT in Vault; used by NetworkPolicy.
+  apiCidrs: [192.0.2.1/32]
+  # Replace these documentation-only IPs with provider-approved destination CIDRs.
+  postgresCidrs: [192.0.2.10/32]
+  s3Cidrs: # Imported from S3_EGRESS_CIDRS in each sink entry.
+    aiven: [192.0.2.20/32]
+    camel: [192.0.2.21/32]
+    camel-connect: [192.0.2.22/32]
+monitoring:
+  enabled: true
+imagePullSecrets: []
+# Optional order lifecycle app. Access through an authenticated oc port-forward.
+# No public Route or HTTPRoute is created; external access requires an auth design.
+dashboard:
+  enabled: false
+  image: registry.example.invalid/streamforge/order-dashboard:build-required
+  replicas: 1
+  preferNoEviction: false
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  publicAccess:
+    enabled: false
+    waypoint: order-dashboard-waypoint
+    identityNamespace: streamforge-identity
+    identityUrl: https://auth.orders.example.invalid
+    realm: streamforge
+    clientId: streamforge-dashboard

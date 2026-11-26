@@ -1,0 +1,50 @@
+# Credentials and local environment
+.local/
+environments/private/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.kubeconfig
+kubeconfig*
+.kube/
+.docker/
+.aws/
+.argocd/
+.netrc
+.pgpass
+.s3cfg
+.envrc
+settings.local.xml
+.vault-token
+.secrets/
+secrets.local.*
+values.local.*
+*-credentials.*
+*.tfstate*
+.terraform/
+# IDE and operating system
+.idea/
+.vscode/
+.DS_Store
+*.iml
+# Build and validation output
+target/
+build/
+dist/
+.venv/
+__pycache__/
+*.pyc
+*.log
+*.tgz
+rendered/
+.cache/
+
+# Browser-test dependencies and reports
+node_modules/
+playwright-report/
+test-results/

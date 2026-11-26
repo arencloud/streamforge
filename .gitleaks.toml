@@ -1,0 +1,9 @@
+title = "Streamforge publication rules"
+[extend]
+useDefault = true
+
+[[rules]]
+id = "openshift-login-token"
+description = "OpenShift login token"
+regex = '''sha256~[A-Za-z0-9_-]{30,}'''
+keywords = ["sha256~"]

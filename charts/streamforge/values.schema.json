@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "mode",
+    "clusterName",
+    "issuer",
+    "secretStore",
+    "vaultPrefix"
+  ],
+  "properties": {
+    "mode": {
+      "enum": [
+        "aiven",
+        "camel",
+        "camel-connect",
+        "both",
+        "all"
+      ]
+    },
+    "clusterName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "issuer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "secretStore": {
+      "type": "string",
+      "minLength": 1
+    },
+    "vaultPrefix": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9/_-]+$"
+    },
+    "connect": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3
+        },
+        "preferNoEviction": {
+          "type": "boolean"
+        }
+      }
+    },
+    "camel": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2
+        },
+        "preferNoEviction": {
+          "type": "boolean"
+        },
+        "antiAffinity": {
+          "type": "string",
+          "enum": [
+            "required",
+            "preferred"
+          ]
+        },
+        "rolloutMaxUnavailable": {
+          "type": "integer",
+          "enum": [
+            0,
+            1
+          ]
+        }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*\\.[a-z_][a-z0-9_]*$"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*$"
+        },
+        "publication": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*$"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "host"
+            ]
+          },
+          {
+            "required": [
+              "database"
+            ]
+          },
+          {
+            "required": [
+              "port"
+            ]
+          }
+        ]
+      }
+    },
+    "s3": {
+      "type": "object",
+      "properties": {
+        "aivenPrefix": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9/_-]+/$"
+        },
+        "camelPrefix": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9/_-]+/$"
+        },
+        "camelConnectPrefix": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9/_-]+/$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "apiCidrs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "postgresCidrs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "s3Cidrs": {
+          "type": "object",
+          "required": [
+            "aiven",
+            "camel",
+            "camel-connect"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "aiven": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            },
+            "camel": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            },
+            "camel-connect": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "postgresPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "preferIPv6": {
+          "type": "boolean"
+        }
+      }
+    },
+    "mesh": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "trustDomain",
+        "discoveryLabel",
+        "waypointName",
+        "waypointReplicas",
+        "operatorServiceAccount",
+        "monitoringNamespace",
+        "monitoringServiceAccount",
+        "discoveryLabelKey",
+        "istioName",
+        "cniName",
+        "ztunnelName"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "waypointReplicas": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3
+        },
+        "discoveryLabel": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "trustDomain": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "waypointName": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "controlPlaneNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "certificateNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "operatorServiceAccount": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "monitoringNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "monitoringServiceAccount": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "discoveryLabelKey": {
+          "type": "string",
+          "pattern": "^([a-z0-9][a-z0-9.-]*/)?[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "istioName": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "cniName": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "ztunnelName": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "preferNoEviction": {
+          "type": "boolean"
+        },
+        "waypointAntiAffinity": {
+          "type": "string",
+          "enum": [
+            "required",
+            "preferred"
+          ]
+        }
+      }
+    },
+    "kafka": {
+      "type": "object",
+      "properties": {
+        "antiAffinity": {
+          "type": "string",
+          "enum": [
+            "required",
+            "preferred"
+          ]
+        },
+        "preferNoEviction": {
+          "type": "boolean"
+        }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "image",
+        "replicas"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "preferNoEviction": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,227 @@
+{{- $waypoint := ternary .Values.dashboard.publicAccess.waypoint .Values.mesh.waypointName .Values.dashboard.publicAccess.enabled }}
+{{- if .Values.dashboard.enabled }}
+{{- if ne .Values.mode "all" }}{{ fail "dashboard requires mode=all for three-way delivery comparison" }}{{ end }}
+{{- if ne .Values.postgres.table "public.orders" }}{{ fail "dashboard requires the public.orders showcase schema" }}{{ end }}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: dashboard-postgres
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+spec:
+  refreshInterval: 5m
+  secretStoreRef: {name: {{ .Values.secretStore }}, kind: ClusterSecretStore}
+  target: {name: dashboard-postgres, creationPolicy: Owner, deletionPolicy: Retain}
+  data:
+    - secretKey: username
+      remoteRef: {key: {{ .Values.vaultPrefix }}/dashboard/postgres, property: PG_APP_USERNAME}
+    - secretKey: password
+      remoteRef: {key: {{ .Values.vaultPrefix }}/dashboard/postgres, property: PG_APP_PASSWORD}
+---
+{{- range $sink := list "aiven" "camel" "camel-connect" }}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: dashboard-s3-{{ $sink }}
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+spec:
+  refreshInterval: 5m
+  secretStoreRef: {name: {{ $.Values.secretStore }}, kind: ClusterSecretStore}
+  target: {name: dashboard-s3-{{ $sink }}, creationPolicy: Owner, deletionPolicy: Retain}
+  data:
+    - secretKey: access-key-id
+      remoteRef: {key: {{ $.Values.vaultPrefix }}/dashboard/s3/{{ $sink }}, property: S3_ACCESS_KEY_ID}
+    - secretKey: secret-access-key
+      remoteRef: {key: {{ $.Values.vaultPrefix }}/dashboard/s3/{{ $sink }}, property: S3_SECRET_ACCESS_KEY}
+    {{- range $key, $property := dict "bucket" "S3_BUCKET" "endpoint" "S3_ENDPOINT" "region" "S3_REGION" "path-style" "S3_PATH_STYLE" "ca.crt" "S3_CA_CERTIFICATE_PEM" }}
+    - secretKey: {{ $key }}
+      remoteRef: {key: {{ $.Values.vaultPrefix }}/s3/{{ $sink }}, property: {{ $property }}}
+    {{- end }}
+---
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-prefixes
+data:
+  aiven: {{ .Values.s3.aivenPrefix | quote }}
+  camel: {{ .Values.s3.camelPrefix | quote }}
+  camel-connect: {{ .Values.s3.camelConnectPrefix | quote }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: order-dashboard}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-dashboard
+  annotations: {argocd.argoproj.io/sync-wave: "3"}
+spec:
+  replicas: {{ .Values.dashboard.replicas }}
+  selector: {matchLabels: {app: order-dashboard}}
+  strategy: {rollingUpdate: {maxSurge: 1, maxUnavailable: 0}}
+  template:
+    metadata:
+      labels:
+        app: order-dashboard
+        {{- include "sf.labels" . | nindent 8 }}
+        {{- if .Values.mesh.enabled }}
+        istio.io/use-waypoint: {{ $waypoint }}
+        {{- if not .Values.dashboard.publicAccess.enabled }}
+        streamforge.io/require-waypoint: "true"
+        {{- end }}
+        {{- end }}
+      annotations:
+        streamforge.io/rotation-revision: {{ .Values.rotationRevision | quote }}
+        {{- if .Values.dashboard.preferNoEviction }}
+        descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+        {{- end }}
+    spec:
+      serviceAccountName: order-dashboard
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "sf.podSecurity" . | nindent 8 }}
+      affinity:
+        {{- include "sf.workerAffinity" . | nindent 8 }}
+      containers:
+        - name: dashboard
+          image: {{ .Values.dashboard.image | quote }}
+          securityContext:
+            {{- include "sf.containerSecurity" . | nindent 12 }}
+            readOnlyRootFilesystem: true
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          ports: [{name: http, containerPort: 8080}]
+          startupProbe:
+            httpGet: {path: /q/health/started, port: http}
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe: {httpGet: {path: /q/health/ready, port: http}}
+          livenessProbe: {httpGet: {path: /q/health/live, port: http}}
+          env:
+            {{- if .Values.dashboard.publicAccess.enabled }}
+            - {name: DASHBOARD_AUTH_ENABLED, value: "true"}
+            - {name: OIDC_PUBLIC_URL, value: {{ .Values.dashboard.publicAccess.identityUrl | quote }}}
+            - {name: OIDC_REALM, value: {{ .Values.dashboard.publicAccess.realm | quote }}}
+            - {name: OIDC_CLIENT_ID, value: {{ .Values.dashboard.publicAccess.clientId | quote }}}
+            - {name: OIDC_JWKS_URL, value: "http://keycloak-service.{{ .Values.dashboard.publicAccess.identityNamespace }}.svc.cluster.local:8080/realms/{{ .Values.dashboard.publicAccess.realm }}/protocol/openid-connect/certs"}
+            - name: DASHBOARD_CSP
+              value: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' {{ .Values.dashboard.publicAccess.identityUrl }}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+            {{- end }}
+            {{- if .Values.network.preferIPv6 }}
+            - {name: JAVA_TOOL_OPTIONS, value: "-Djava.net.preferIPv4Stack=false -Djava.net.preferIPv6Addresses=true"}
+            {{- end }}
+            - {name: KAFKA_TOPIC, value: {{ .Values.postgres.topic | quote }}}
+            - name: PG_APP_USERNAME
+              valueFrom: {secretKeyRef: {name: dashboard-postgres, key: username}}
+            - name: PG_APP_PASSWORD
+              valueFrom: {secretKeyRef: {name: dashboard-postgres, key: password}}
+            {{- range $env, $key := dict "PG_HOST" "host" "PG_PORT" "port" "PG_DATABASE" "database" }}
+            - name: {{ $env }}
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: {{ $key }}}}
+            {{- end }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: postgres-ca, mountPath: /mnt/postgres-ca, readOnly: true}
+            {{- range list "aiven" "camel" "camel-connect" }}
+            - {name: s3-{{ . }}, mountPath: /mnt/s3-readers/{{ . }}, readOnly: true}
+            {{- end }}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 128Mi}}
+        - name: postgres-ca
+          secret:
+            secretName: postgres-credentials
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- range list "aiven" "camel" "camel-connect" }}
+        - name: s3-{{ . }}
+          projected:
+            sources:
+              - secret: {name: dashboard-s3-{{ . }}}
+              - configMap:
+                  name: dashboard-prefixes
+                  items: [{key: {{ . }}, path: prefix}]
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-dashboard
+  {{- if .Values.mesh.enabled }}
+  labels:
+    istio.io/use-waypoint: {{ $waypoint }}
+    {{- if .Values.dashboard.publicAccess.enabled }}
+    istio.io/ingress-use-waypoint: "true"
+    {{- end }}
+  {{- end }}
+spec:
+  selector: {app: order-dashboard}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: dashboard-data-egress}
+spec:
+  podSelector: {matchLabels: {app: order-dashboard}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.network.postgresCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: {{ .Values.network.postgresPort }}}]
+    - to:
+        {{- range $sink := list "aiven" "camel" "camel-connect" }}
+        {{- range index $.Values.network.s3Cidrs $sink }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+        {{- end }}
+      ports: [{protocol: TCP, port: 443}]
+---
+{{- if .Values.mesh.enabled }}
+# Browser access is restricted to Kubernetes-authenticated port forwarding.
+# Deny mesh clients, including monitoring identities allowed by shared policies.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: {name: dashboard-local-access-only}
+spec:
+  selector: {matchLabels: {app: order-dashboard}}
+  action: DENY
+  rules:
+    - {{ if .Values.dashboard.publicAccess.enabled }}from:
+        - source:
+            notPrincipals: ["{{ .Values.mesh.trustDomain }}/ns/{{ .Release.Namespace }}/sa/{{ $waypoint }}"]
+      {{ end }}to:
+        - operation: {ports: ["8080"]}
+{{- if .Values.dashboard.publicAccess.enabled }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: {name: dashboard-waypoint-transport}
+spec:
+  selector: {matchLabels: {app: order-dashboard}}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["{{ .Values.mesh.trustDomain }}/ns/{{ .Release.Namespace }}/sa/{{ $waypoint }}"]
+      to: [{operation: {ports: ["8080"]}}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: dashboard-identity-egress}
+spec:
+  podSelector: {matchLabels: {app: order-dashboard}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.dashboard.publicAccess.identityNamespace }}}}}]
+      ports: [{protocol: TCP, port: 8080}, {protocol: TCP, port: 15008}]
+{{- end }}
+{{- else }}
+{{- fail "dashboard requires mesh.enabled=true; only authenticated port-forward access is configured" }}
+{{- end }}
+{{- end }}

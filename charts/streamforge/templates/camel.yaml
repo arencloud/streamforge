@@ -1,0 +1,139 @@
+{{- if has .Values.mode (list "camel" "both" "all") }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: camel-s3
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: camel-s3
+  annotations: {argocd.argoproj.io/sync-wave: "2"}
+spec:
+  replicas: {{ .Values.camel.replicas }}
+  selector:
+    matchLabels: {app: camel-s3}
+  strategy:
+    rollingUpdate: {maxUnavailable: {{ .Values.camel.rolloutMaxUnavailable }}, maxSurge: 1}
+  template:
+    metadata:
+      labels:
+        app: camel-s3
+        {{- if .Values.mesh.enabled }}
+        istio.io/use-waypoint: {{ .Values.mesh.waypointName }}
+        streamforge.io/require-waypoint: "true"
+        {{- end }}
+        streamforge.io/s3-client: "true"
+        {{- include "sf.labels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.camel.preferNoEviction }}
+        descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+        {{- end }}
+        streamforge.io/rotation-revision: {{ .Values.rotationRevision | quote }}
+    spec:
+      serviceAccountName: camel-s3
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "sf.podSecurity" . | nindent 8 }}
+      affinity:
+        {{- include "sf.workerAffinity" . | nindent 8 }}
+        podAntiAffinity:
+          {{- if eq .Values.camel.antiAffinity "preferred" }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {app: camel-s3}
+          {{- else }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels: {app: camel-s3}
+          {{- end }}
+      containers:
+        - name: camel
+          image: {{ .Values.camel.image | quote }}
+          securityContext:
+            {{- include "sf.containerSecurity" . | nindent 12 }}
+            readOnlyRootFilesystem: true
+          resources:
+            {{- toYaml .Values.camel.resources | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8080}
+          startupProbe:
+            httpGet: {path: /q/health/started, port: http}
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: /q/health/ready, port: http}
+          livenessProbe:
+            httpGet: {path: /q/health/live, port: http}
+          env:
+            {{- if .Values.network.preferIPv6 }}
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Djava.net.preferIPv4Stack=false -Djava.net.preferIPv6Addresses=true"
+            {{- end }}
+            - {name: KAFKA_BOOTSTRAP, value: "{{ .Values.clusterName }}-kafka-bootstrap:9093"}
+            - {name: KAFKA_TOPIC, value: {{ .Values.postgres.topic | quote }}}
+            - {name: KAFKA_USERNAME, value: camel-s3}
+            - name: KAFKA_PASSWORD
+              valueFrom: {secretKeyRef: {name: camel-auth, key: password}}
+            - name: S3_ENDPOINT
+              valueFrom: {secretKeyRef: {name: s3-camel, key: endpoint}}
+            - name: S3_REGION
+              valueFrom: {secretKeyRef: {name: s3-camel, key: region}}
+            - name: S3_BUCKET
+              valueFrom: {secretKeyRef: {name: s3-camel, key: bucket}}
+            - {name: S3_PREFIX, value: {{ .Values.s3.camelPrefix | quote }}}
+            - name: S3_PATH_STYLE
+              valueFrom: {secretKeyRef: {name: s3-camel, key: path-style}}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: s3-camel, key: access-key-id}}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: s3-camel, key: secret-access-key}}
+          volumeMounts:
+            - {name: trust, mountPath: /mnt/trust, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: trust
+          projected:
+            sources:
+              - secret:
+                  name: external-trust
+                  items: [{key: kafka-ca.crt, path: kafka-ca.crt}]
+              - secret:
+                  name: s3-camel
+                  items: [{key: ca.crt, path: s3-ca.crt}]
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: camel-s3
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app: camel-s3}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: camel-s3
+  labels:
+    app: camel-s3
+    {{- if .Values.mesh.enabled }}
+    istio.io/use-waypoint: {{ .Values.mesh.waypointName }}
+    {{- end }}
+spec:
+  selector: {app: camel-s3}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+{{- end }}

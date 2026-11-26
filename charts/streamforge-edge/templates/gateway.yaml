@@ -1,0 +1,170 @@
+{{- $gateway := .Values.gatewayName }}
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $gateway }}-options}
+data:
+  service: |
+    spec:
+      type: LoadBalancer
+      ipFamilyPolicy: SingleStack
+      ipFamilies: [{{ ternary "IPv6" "IPv4" .Values.network.preferIPv6 }}]
+      externalTrafficPolicy: Local
+      ports:
+        - $patch: delete
+          port: 15021
+  deployment: |
+    spec:
+      replicas: 1
+      template:
+        metadata:
+          annotations:
+            descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+        spec:
+          containers:
+            - name: istio-proxy
+              resources:
+                {{- toYaml .Values.proxyResources | nindent 16 }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ $gateway }}
+  {{- with .Values.gatewayAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: istio
+  infrastructure:
+    parametersRef: {group: "", kind: ConfigMap, name: {{ $gateway }}-options}
+  listeners:
+    - name: https
+      hostname: {{ .Values.hostname | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs: [{group: "", kind: Secret, name: streamforge-web-tls}]
+      allowedRoutes: {namespaces: {from: Same}}
+    - name: keycloak-https
+      hostname: {{ .Values.identityHostname | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs: [{group: "", kind: Secret, name: streamforge-identity-tls}]
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [{{ .Release.Namespace }}, {{ .Values.identityNamespace }}]
+---
+apiVersion: kuadrant.io/v1
+kind: TLSPolicy
+metadata: {name: streamforge-edge-tls}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: Gateway, name: {{ $gateway }}}
+  issuerRef: {group: cert-manager.io, kind: ClusterIssuer, name: {{ .Values.issuer }}}
+  duration: 24h
+  renewBefore: 8h
+  privateKey: {algorithm: RSA, size: 2048, rotationPolicy: Always}
+---
+apiVersion: extensions.istio.io/v1alpha1
+kind: WasmPlugin
+metadata: {name: streamforge-coraza}
+spec:
+  targetRefs: [{group: gateway.networking.k8s.io, kind: Gateway, name: {{ $gateway }}}]
+  url: {{ .Values.corazaImage | quote }}
+  imagePullPolicy: IfNotPresent
+  phase: AUTHN
+  priority: 100
+  failStrategy: FAIL_CLOSE
+  pluginConfig:
+    default_directives: default
+    directives_map:
+      default:
+        - Include @recommended-conf
+        - SecRuleEngine On
+        - SecDebugLogLevel 1
+        - SecRequestBodyAccess On
+        - SecRequestBodyLimit 65536
+        - SecRequestBodyInMemoryLimit 65536
+        - SecRequestBodyLimitAction Reject
+        - SecResponseBodyAccess Off
+        - Include @crs-setup-conf
+        # Permit the application's PATCH endpoint without disabling CRS inspection.
+        - |-
+          SecRule REQUEST_HEADERS:Host "@streq {{ .Values.hostname }}" "id:10010,phase:1,pass,nolog,t:none,chain"
+          SecRule REQUEST_URI "@rx ^/api/orders/[0-9]+/status$" "t:none,chain"
+          SecRule REQUEST_METHOD "@streq PATCH" "t:none,setvar:'tx.allowed_methods=GET HEAD POST OPTIONS PATCH'"
+        - Include @owasp_crs/*.conf
+---
+apiVersion: v1
+kind: Service
+metadata: {name: streamforge-edge-readiness}
+spec:
+  selector: {gateway.networking.k8s.io/gateway-name: {{ $gateway }}}
+  ports: [{name: http-readiness, port: 15021, targetPort: 15021, appProtocol: http}]
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata: {name: streamforge-edge-readiness}
+spec:
+  host: streamforge-edge-readiness.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+      - port: {number: 15021}
+        tls: {mode: DISABLE}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: streamforge-edge-readiness}
+spec:
+  parentRefs:
+    - {name: {{ $gateway }}, sectionName: https}
+    - {name: {{ $gateway }}, sectionName: keycloak-https}
+  hostnames: [{{ .Values.hostname | quote }}, {{ .Values.identityHostname | quote }}]
+  rules:
+    - matches: [{path: {type: Exact, value: /health/ready}, method: GET}]
+      filters:
+        - type: URLRewrite
+          urlRewrite: {path: {type: ReplaceFullPath, replaceFullPath: /healthz/ready}}
+      backendRefs: [{name: streamforge-edge-readiness, port: 15021}]
+---
+{{- if .Values.dashboardRoutesEnabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: streamforge-web}
+spec:
+  parentRefs: [{name: {{ $gateway }}, sectionName: https}]
+  hostnames: [{{ .Values.hostname | quote }}]
+  rules:
+    - matches:
+        {{- range list "/" "/index.html" "/app.js" "/app.css" "/vendor/keycloak.js" "/auth/config" }}
+        - {path: {type: Exact, value: {{ . | quote }}}, method: GET}
+        {{- end }}
+      backendRefs: [{name: order-dashboard, port: 8080}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: streamforge-api}
+spec:
+  parentRefs: [{name: {{ $gateway }}, sectionName: https}]
+  hostnames: [{{ .Values.hostname | quote }}]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /api}}]
+      backendRefs: [{name: order-dashboard, port: 8080}]
+---
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: streamforge-identity, namespace: {{ .Values.identityNamespace }}}
+spec:
+  parentRefs: [{name: {{ $gateway }}, namespace: {{ .Release.Namespace }}, sectionName: keycloak-https}]
+  hostnames: [{{ .Values.identityHostname | quote }}]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /}}]
+      backendRefs: [{name: keycloak-service, port: 8080}]

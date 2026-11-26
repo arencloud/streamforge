@@ -1,0 +1,90 @@
+# Field-only provisioning inventory, not a Vault import payload.
+# Supply values in Vault. Never commit a populated copy.
+# *_EGRESS_CIDRS are provisioning metadata; private Helm values enforce network policy.
+# dashboard/* and keycloak/* are needed only when those components are enabled.
+
+secret/streamforge/postgres:
+  PG_CDC_USERNAME: null
+  PG_CDC_PASSWORD: null
+  PG_HOST: null
+  PG_PORT: null
+  PG_DATABASE: null
+  PG_CA_PEM: null
+  PG_EGRESS_CIDRS: null
+
+secret/streamforge/trust:
+  KAFKA_CA_PEM: null
+
+secret/streamforge/kafka/source:
+  KAFKA_SOURCE_PASSWORD: null
+
+secret/streamforge/kafka/aiven:
+  KAFKA_AIVEN_PASSWORD: null
+
+secret/streamforge/kafka/camel:
+  KAFKA_CAMEL_QUARKUS_PASSWORD: null
+
+secret/streamforge/kafka/camel-connect:
+  KAFKA_CAMEL_CONNECT_PASSWORD: null
+
+secret/streamforge/s3/aiven:
+  S3_AIVEN_ACCESS_KEY_ID: null
+  S3_AIVEN_SECRET_ACCESS_KEY: null
+  S3_BUCKET: null
+  S3_ENDPOINT: null
+  S3_REGION: null
+  S3_PATH_STYLE: null
+  S3_CA_CERTIFICATE_PEM: null
+  S3_EGRESS_CIDRS: null
+
+secret/streamforge/s3/camel:
+  S3_CAMEL_QUARKUS_ACCESS_KEY_ID: null
+  S3_CAMEL_QUARKUS_SECRET_ACCESS_KEY: null
+  S3_BUCKET: null
+  S3_ENDPOINT: null
+  S3_REGION: null
+  S3_PATH_STYLE: null
+  S3_CA_CERTIFICATE_PEM: null
+  S3_EGRESS_CIDRS: null
+
+secret/streamforge/s3/camel-connect:
+  S3_CAMEL_CONNECT_ACCESS_KEY_ID: null
+  S3_CAMEL_CONNECT_SECRET_ACCESS_KEY: null
+  S3_BUCKET: null
+  S3_ENDPOINT: null
+  S3_REGION: null
+  S3_PATH_STYLE: null
+  S3_CA_CERTIFICATE_PEM: null
+  S3_EGRESS_CIDRS: null
+
+secret/streamforge/dashboard/postgres:
+  PG_APP_USERNAME: null
+  PG_APP_PASSWORD: null
+
+secret/streamforge/dashboard/s3/aiven:
+  S3_ACCESS_KEY_ID: null
+  S3_SECRET_ACCESS_KEY: null
+
+secret/streamforge/dashboard/s3/camel:
+  S3_ACCESS_KEY_ID: null
+  S3_SECRET_ACCESS_KEY: null
+
+secret/streamforge/dashboard/s3/camel-connect:
+  S3_ACCESS_KEY_ID: null
+  S3_SECRET_ACCESS_KEY: null
+
+secret/streamforge/keycloak/postgres:
+  PG_HOST: null
+  PG_PORT: null
+  PG_DATABASE: null
+  PG_USERNAME: null
+  PG_PASSWORD: null
+  PG_CA_PEM: null
+
+secret/streamforge/keycloak/bootstrap:
+  KC_BOOTSTRAP_ADMIN_USERNAME: null
+  KC_BOOTSTRAP_ADMIN_PASSWORD: null
+
+secret/streamforge/keycloak/users/operator:
+  KC_USERNAME: null
+  KC_PASSWORD: null

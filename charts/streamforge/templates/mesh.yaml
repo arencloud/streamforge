@@ -1,0 +1,193 @@
+{{- if .Values.mesh.enabled }}
+{{- $principal := printf "%s/ns/%s/sa" .Values.mesh.trustDomain .Release.Namespace }}
+{{- $operator := printf "%s/ns/%s/sa/%s" .Values.mesh.trustDomain .Values.network.operatorNamespace .Values.mesh.operatorServiceAccount }}
+{{- $monitor := printf "%s/ns/%s/sa/%s" .Values.mesh.trustDomain .Values.mesh.monitoringNamespace .Values.mesh.monitoringServiceAccount }}
+{{- $workers := list "source" }}
+{{- if has .Values.mode (list "aiven" "both" "all") }}{{ $workers = append $workers "aiven" }}{{ end }}
+{{- if has .Values.mode (list "camel-connect" "all") }}{{ $workers = append $workers "camel-connect" }}{{ end }}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: streamforge-strict
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  mtls: {mode: STRICT}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: streamforge-default-deny
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec: {}
+---
+# Enforced directly at ztunnel. Kafka traffic never traverses a waypoint.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: kafka-client-identities
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  selector:
+    matchLabels: {strimzi.io/cluster: {{ .Values.clusterName }}}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              {{- range $workers }}
+              - {{ printf "%s/connect-%s-connect" $principal . | quote }}
+              {{- end }}
+              {{- if has .Values.mode (list "camel" "both" "all") }}
+              - {{ printf "%s/camel-s3" $principal | quote }}
+              {{- end }}
+      to:
+        - operation: {ports: ["9093"]}
+---
+# Native Streams TLS remains in use inside the ambient mTLS overlay.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: kafka-native-internal
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  selector:
+    matchLabels: {strimzi.io/cluster: {{ .Values.clusterName }}}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ printf "%s/%s-kafka" $principal .Values.clusterName | quote }}
+              - {{ $operator | quote }}
+      to:
+        - operation: {ports: ["9090", "9091"]}
+    - from:
+        - source:
+            principals:
+              - {{ printf "%s/%s-entity-operator" $principal .Values.clusterName | quote }}
+              - {{ printf "%s/%s-kafka-exporter" $principal .Values.clusterName | quote }}
+      to:
+        - operation: {ports: ["9091"]}
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - source: {principals: [{{ $monitor | quote }}]}
+      to:
+        - operation: {ports: ["9404"]}
+    {{- end }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: api-require-waypoint
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  selector:
+    matchLabels: {streamforge.io/require-waypoint: "true"}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: [{{ printf "%s/%s" $principal .Values.mesh.waypointName | quote }}]
+      to:
+        - operation: {ports: ["8083", "8080", "9404"]}
+---
+# Gateway attachment applies to both Service and direct Connect pod traffic.
+# No Kafka client, replication, or controller port is authorized at the waypoint.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: streamforge-waypoint-clients
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.mesh.waypointName }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ $operator | quote }}
+              {{- range $workers }}
+              - {{ printf "%s/connect-%s-connect" $principal . | quote }}
+              {{- end }}
+      to:
+        - operation: {ports: ["8083"]}
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - source: {principals: [{{ $monitor | quote }}]}
+      to:
+        - operation: {ports: ["8080", "9404"]}
+    {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streamforge-waypoint-options
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+data:
+  deployment: |
+    spec:
+      replicas: {{ .Values.mesh.waypointReplicas }}
+      template:
+        {{- if .Values.mesh.preferNoEviction }}
+        metadata:
+          annotations:
+            descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+        {{- end }}
+        spec:
+          affinity:
+            {{- include "sf.workerAffinity" . | nindent 12 }}
+            podAntiAffinity:
+              {{- if eq .Values.mesh.waypointAntiAffinity "preferred" }}
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        gateway.networking.k8s.io/gateway-name: {{ .Values.mesh.waypointName }}
+              {{- else }}
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      gateway.networking.k8s.io/gateway-name: {{ .Values.mesh.waypointName }}
+              {{- end }}
+          containers:
+            - name: istio-proxy
+              resources:
+                {{- toYaml .Values.mesh.waypointResources | nindent 16 }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Values.mesh.waypointName }}
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+  labels:
+    # Kafka Services and broker/controller pods are not enrolled.
+    # Connect pods are enrolled to protect REST forwarding to direct pod IPs.
+    istio.io/waypoint-for: all
+spec:
+  gatewayClassName: istio-waypoint
+  infrastructure:
+    parametersRef: {group: "", kind: ConfigMap, name: streamforge-waypoint-options}
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE
+      allowedRoutes:
+        namespaces: {from: Same}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: streamforge-waypoint
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ .Values.mesh.waypointName }}
+{{- end }}

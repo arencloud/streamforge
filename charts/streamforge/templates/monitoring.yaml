@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streamforge-metrics
+data:
+  kafka.yml: |
+    lowercaseOutputName: true
+    rules:
+      - pattern: 'kafka.server<type=ReplicaManager, name=(UnderReplicatedPartitions|UnderMinIsrPartitionCount)><>Value'
+        name: kafka_server_replicamanager_$1
+        type: GAUGE
+      - pattern: 'kafka.controller<type=KafkaController, name=(ActiveControllerCount|OfflinePartitionsCount)><>Value'
+        name: kafka_controller_kafkacontroller_$1
+        type: GAUGE
+      - pattern: 'kafka.server<type=BrokerTopicMetrics, name=MessagesInPerSec><>Count'
+        name: kafka_server_messagesin_total
+        type: COUNTER
+  connect.yml: |
+    lowercaseOutputName: true
+    rules:
+      - pattern: 'kafka.connect<type=connector-task-metrics, connector=(.+), task=(.+)><>status: (.+)'
+        name: kafka_connect_task_status
+        value: 1
+        labels: {connector: '$1', task: '$2', status: '$3'}
+        type: GAUGE
+      - pattern: 'kafka.connect<type=source-task-metrics, connector=(.+), task=(.+)><>source-record-write-total'
+        name: kafka_connect_source_records_total
+        labels: {connector: '$1', task: '$2'}
+        type: COUNTER
+      - pattern: 'kafka.connect<type=sink-task-metrics, connector=(.+), task=(.+)><>sink-record-send-total'
+        name: kafka_connect_sink_records_total
+        labels: {connector: '$1', task: '$2'}
+        type: COUNTER
+---
+{{- if .Values.monitoring.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: streamforge-kafka
+spec:
+  selector:
+    matchExpressions:
+      - key: strimzi.io/cluster
+        operator: In
+        values: [{{ .Values.clusterName }}, connect-source, connect-aiven, connect-camel-connect]
+  podMetricsEndpoints:
+    - port: tcp-prometheus
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: streamforge
+spec:
+  groups:
+    - name: streamforge
+      rules:
+        - alert: KafkaUnderReplicated
+          expr: kafka_server_replicamanager_underreplicatedpartitions{namespace="{{ .Release.Namespace }}"} > 0
+          for: 5m
+          labels: {severity: warning}
+          annotations: {summary: "Kafka partitions have fewer replicas than configured"}
+        - alert: KafkaBelowMinISR
+          expr: kafka_server_replicamanager_underminisrpartitioncount{namespace="{{ .Release.Namespace }}"} > 0
+          for: 1m
+          labels: {severity: critical}
+          annotations: {summary: "Kafka cannot meet its minimum ISR durability requirement"}
+        - alert: KafkaConnectTaskFailed
+          expr: kafka_connect_task_status{namespace="{{ .Release.Namespace }}",status="failed"} == 1
+          for: 2m
+          labels: {severity: critical}
+          annotations: {summary: "CDC or S3 connector task has failed"}
+        - alert: KafkaConsumerLag
+          expr: sum by (consumergroup) (kafka_consumergroup_lag{namespace="{{ .Release.Namespace }}"}) > 10000
+          for: 15m
+          labels: {severity: warning}
+          annotations: {summary: "Kafka consumer lag exceeds 10000 records"}
+        - alert: StreamforgeVolumeAlmostFull
+          expr: kubelet_volume_stats_available_bytes{namespace="{{ .Release.Namespace }}"} / kubelet_volume_stats_capacity_bytes{namespace="{{ .Release.Namespace }}"} < 0.20
+          for: 10m
+          labels: {severity: critical}
+          annotations: {summary: "Kafka PVC has less than 20 percent free space"}
+        - alert: StreamforgeCertificateExpiring
+          expr: certmanager_certificate_expiration_timestamp_seconds{namespace="{{ .Release.Namespace }}"} - time() < 604800
+          for: 1h
+          labels: {severity: critical}
+          annotations: {summary: "Kafka listener certificate expires within seven days"}
+        - alert: CamelS3Failures
+          expr: increase(streamforge_s3_failures_total{namespace="{{ .Release.Namespace }}"}[5m]) > 0
+          labels: {severity: warning}
+          annotations: {summary: "Camel cannot persist CDC records to S3"}
+---
+{{- if has .Values.mode (list "camel" "both" "all") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: camel-s3
+spec:
+  selector:
+    matchLabels: {app: camel-s3}
+  endpoints:
+    - {port: http, path: /q/metrics, interval: 30s}
+{{- end }}
+{{- end }}

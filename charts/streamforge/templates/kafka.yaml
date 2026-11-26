@@ -1,0 +1,148 @@
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: {{ .Values.clusterName }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  kafka:
+    version: {{ .Values.kafka.version | quote }}
+    metadataVersion: {{ .Values.kafka.metadataVersion | quote }}
+    listeners:
+      - name: secure
+        port: 9093
+        type: internal
+        tls: true
+        authentication:
+          type: scram-sha-512
+        configuration:
+          brokerCertChainAndKey:
+            secretName: kafka-listener-tls
+            certificate: tls.crt
+            key: tls.key
+        networkPolicyPeers:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/part-of: streamforge
+    authorization:
+      type: simple
+    config:
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      unclean.leader.election.enable: false
+      auto.create.topics.enable: false
+      log.retention.hours: 168
+      log.segment.bytes: 1073741824
+      # Bound per-partition disk use; retention is whichever bound is reached first.
+      log.retention.bytes: 10737418240
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef: {name: streamforge-metrics, key: kafka.yml}
+    template:
+      podDisruptionBudget:
+        maxUnavailable: 1
+  entityOperator:
+    topicOperator:
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+    userOperator:
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+    template:
+      pod:
+        metadata:
+          {{- if .Values.kafka.preferNoEviction }}
+          annotations:
+            descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+          {{- end }}
+          labels:
+            {{- include "sf.labels" . | nindent 12 }}
+  kafkaExporter:
+    {{- if .Values.kafka.preferNoEviction }}
+    template:
+      pod:
+        metadata:
+          annotations:
+            descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+    {{- end }}
+    topicRegex: "sf.*"
+    groupRegex: ".*"
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 256Mi}
+---
+{{- range $role := list "controller" "broker" }}
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: {{ $role }}s
+  labels:
+    strimzi.io/cluster: {{ $.Values.clusterName }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  replicas: 3
+  roles: [{{ $role }}]
+  storage:
+    type: persistent-claim
+    class: {{ $.Values.kafka.storageClass }}
+    size: {{ if eq $role "broker" }}{{ $.Values.kafka.brokerStorage }}{{ else }}{{ $.Values.kafka.controllerStorage }}{{ end }}
+    deleteClaim: false
+  resources:
+    {{- if eq $role "broker" }}
+    {{- toYaml $.Values.kafka.brokerResources | nindent 4 }}
+    {{- else }}
+    {{- toYaml $.Values.kafka.controllerResources | nindent 4 }}
+    {{- end }}
+  jvmOptions:
+    "-Xms": {{ if eq $role "broker" }}2g{{ else }}512m{{ end }}
+    "-Xmx": {{ if eq $role "broker" }}2g{{ else }}512m{{ end }}
+    {{- if $.Values.network.preferIPv6 }}
+    javaSystemProperties:
+      - {name: java.net.preferIPv4Stack, value: "false"}
+      - {name: java.net.preferIPv6Addresses, value: "true"}
+    {{- end }}
+  template:
+    pod:
+      metadata:
+        {{- if $.Values.kafka.preferNoEviction }}
+        annotations:
+          descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+        {{- end }}
+        labels:
+          {{- include "sf.labels" $ | nindent 10 }}
+      affinity:
+        {{- include "sf.workerAffinity" $ | nindent 8 }}
+        podAntiAffinity:
+          {{- if eq $.Values.kafka.antiAffinity "preferred" }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    strimzi.io/cluster: {{ $.Values.clusterName }}
+                    strimzi.io/pool-name: {{ $role }}s
+          {{- else }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  strimzi.io/cluster: {{ $.Values.clusterName }}
+                  strimzi.io/pool-name: {{ $role }}s
+          {{- end }}
+      securityContext:
+        {{- include "sf.podSecurity" $ | nindent 8 }}
+    kafkaContainer:
+      securityContext:
+        {{- include "sf.containerSecurity" $ | nindent 8 }}
+---
+{{- end }}

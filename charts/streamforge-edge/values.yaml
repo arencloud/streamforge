@@ -1,0 +1,43 @@
+hostname: orders.example.invalid
+identityHostname: auth.orders.example.invalid
+issuer: vault-cluster-issuer
+secretStore: vault-cluster-store
+vaultPrefix: streamforge
+identityNamespace: streamforge-identity
+gatewayName: streamforge-gateway
+dashboardWaypoint: order-dashboard-waypoint
+identityWaypoint: keycloak-waypoint
+realm: streamforge
+clientId: streamforge-dashboard
+corazaImage: oci://registry.example.invalid/security/coraza@sha256:REPLACE_WITH_VERIFIED_CHILD_MANIFEST
+# DNS publication is platform-specific; public examples contain no private annotations.
+gatewayAnnotations: {}
+mesh:
+  trustDomain: cluster.local
+  discoveryLabelKey: mesh.example.com/member
+  discoveryLabel: platform
+  controlPlaneNamespace: istio-system
+  certificateNamespace: istio-csr
+  authorinoNamespace: kuadrant-system
+  authorinoServiceAccount: authorino-authorino
+  operatorNamespace: keycloak-operator
+network:
+  postgresPort: 5432
+  postgresCidrs: ["2001:db8::10/128"]
+  preferIPv6: true
+keycloak:
+  instances: 1
+  resources:
+    requests: {cpu: 500m, memory: 1700Mi}
+    limits: {cpu: "2", memory: 2Gi}
+proxyResources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: "1", memory: 512Mi}
+rateLimits:
+  apiRead: 300
+  apiWrite: 60
+  public: 120
+  identity: 120
+
+# Keep false while bootstrapping identity and deploying the authenticated backend.
+dashboardRoutesEnabled: true

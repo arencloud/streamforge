@@ -1,0 +1,185 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.identityNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: "-3"}
+  labels:
+    app.kubernetes.io/part-of: streamforge
+    istio.io/dataplane-mode: ambient
+    {{ .Values.mesh.discoveryLabelKey }}: {{ .Values.mesh.discoveryLabel | quote }}
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keycloak-db
+  namespace: {{ .Values.identityNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+spec:
+  refreshInterval: 5m
+  secretStoreRef: {name: {{ .Values.secretStore }}, kind: ClusterSecretStore}
+  target:
+    name: keycloak-db
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    template:
+      engineVersion: v2
+      data:
+        username: {{ `{{ .username }}` | quote }}
+        password: {{ `{{ .password }}` | quote }}
+        jdbc-url: {{ printf `{{ if not (regexMatch "^[A-Za-z0-9.-]+$" .host) }}{{ template "Invalid PostgreSQL DNS host" }}{{ end }}{{ if not (regexMatch "^[A-Za-z0-9_-]+$" .database) }}{{ template "Invalid database name" }}{{ end }}{{ if ne .port %q }}{{ template "PostgreSQL port must match approved egress" }}{{ end }}jdbc:postgresql://{{ .host }}:{{ .port }}/{{ .database }}?sslmode=verify-full&sslrootcert=/opt/keycloak/conf/truststores/secret-keycloak-db-ca/root.pem` (toString .Values.network.postgresPort) | quote }}
+  data:
+    {{- range $key,$field := dict "username" "PG_USERNAME" "password" "PG_PASSWORD" "host" "PG_HOST" "port" "PG_PORT" "database" "PG_DATABASE" }}
+    - secretKey: {{ $key }}
+      remoteRef: {key: {{ $.Values.vaultPrefix }}/keycloak/postgres, property: {{ $field }}}
+    {{- end }}
+---
+{{- range $item := list
+  (dict "name" "keycloak-db-ca" "path" "keycloak/postgres" "keys" (dict "root.pem" "PG_CA_PEM"))
+  (dict "name" "keycloak-bootstrap" "path" "keycloak/bootstrap" "keys" (dict "username" "KC_BOOTSTRAP_ADMIN_USERNAME" "password" "KC_BOOTSTRAP_ADMIN_PASSWORD"))
+  (dict "name" "keycloak-operator-user" "path" "keycloak/users/operator" "keys" (dict "username" "KC_USERNAME" "password" "KC_PASSWORD")) }}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ $item.name }}
+  namespace: {{ $.Values.identityNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+spec:
+  refreshInterval: 5m
+  secretStoreRef: {name: {{ $.Values.secretStore }}, kind: ClusterSecretStore}
+  target: {name: {{ $item.name }}, creationPolicy: Owner, deletionPolicy: Retain}
+  data:
+    {{- range $key,$field := $item.keys }}
+    - secretKey: {{ $key }}
+      remoteRef: {key: {{ $.Values.vaultPrefix }}/{{ $item.path }}, property: {{ $field }}}
+    {{- end }}
+---
+{{- end }}
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: {{ .Values.identityNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  instances: {{ .Values.keycloak.instances }}
+  unsupported:
+    podTemplate:
+      metadata:
+        annotations:
+          descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+  db:
+    vendor: postgres
+    usernameSecret: {name: keycloak-db, key: username}
+    passwordSecret: {name: keycloak-db, key: password}
+  bootstrapAdmin: {user: {secret: keycloak-bootstrap}}
+  truststores:
+    postgresql: {secret: {name: keycloak-db-ca}}
+  additionalOptions:
+    - {name: db-url, secret: {name: keycloak-db, key: jdbc-url}}
+    - {name: http-management-scheme, value: http}
+    {{- if .Values.network.preferIPv6 }}
+    - {name: http-host, value: "::"}
+    - {name: http-management-host, value: "::"}
+    {{- end }}
+  env:
+    - name: JAVA_OPTS_APPEND
+      value: {{ ternary "-Djava.net.preferIPv4Stack=false -Djava.net.preferIPv6Addresses=true" "-Djava.net.preferIPv4Stack=false" .Values.network.preferIPv6 | quote }}
+  http:
+    httpEnabled: true
+    labels:
+      istio.io/use-waypoint: {{ .Values.identityWaypoint }}
+      istio.io/ingress-use-waypoint: "true"
+  hostname: {hostname: "https://{{ .Values.identityHostname }}", strict: true}
+  proxy: {headers: xforwarded}
+  ingress: {enabled: false}
+  networkPolicy: {enabled: false}
+  resources:
+    {{- toYaml .Values.keycloak.resources | nindent 4 }}
+---
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: streamforge
+  namespace: {{ .Values.identityNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: "2"}
+spec:
+  keycloakCRName: keycloak
+  placeholders:
+    OPERATOR_USERNAME: {secret: {name: keycloak-operator-user, key: username}}
+    OPERATOR_PASSWORD: {secret: {name: keycloak-operator-user, key: password}}
+  realm:
+    realm: {{ .Values.realm }}
+    enabled: true
+    displayName: Streamforge
+    registrationAllowed: false
+    resetPasswordAllowed: false
+    sslRequired: all
+    bruteForceProtected: true
+    accessTokenLifespan: 300
+    ssoSessionIdleTimeout: 1800
+    ssoSessionMaxLifespan: 28800
+    roles:
+      realm:
+        - {name: streamforge-viewer}
+        - name: streamforge-operator
+          composite: true
+          composites: {realm: [streamforge-viewer]}
+    clients:
+      - clientId: {{ .Values.clientId }}
+        name: Streamforge order dashboard
+        enabled: true
+        protocol: openid-connect
+        publicClient: true
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        implicitFlowEnabled: false
+        serviceAccountsEnabled: false
+        fullScopeAllowed: false
+        redirectUris: ["https://{{ .Values.hostname }}/"]
+        webOrigins: ["https://{{ .Values.hostname }}"]
+        attributes:
+          pkce.code.challenge.method: S256
+          post.logout.redirect.uris: "https://{{ .Values.hostname }}/"
+        defaultClientScopes: [profile, email]
+        protocolMappers:
+          - name: streamforge-audience
+            protocol: openid-connect
+            protocolMapper: oidc-audience-mapper
+            config:
+              included.client.audience: {{ .Values.clientId }}
+              access.token.claim: "true"
+              id.token.claim: "false"
+          - name: streamforge-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            config:
+              claim.name: realm_access.roles
+              jsonType.label: String
+              multivalued: "true"
+              access.token.claim: "true"
+              id.token.claim: "false"
+        # Explicit realm-role scope mapping prevents unrelated realm roles leaking to the client.
+    scopeMappings:
+      - client: {{ .Values.clientId }}
+        roles: [streamforge-viewer, streamforge-operator]
+    users:
+      - username: ${OPERATOR_USERNAME}
+        enabled: true
+        emailVerified: true
+        firstName: Demo
+        lastName: Operator
+        email: operator@streamforge.example
+        realmRoles: [streamforge-operator]
+        credentials:
+          - {type: password, value: "${OPERATOR_PASSWORD}", temporary: false}
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: keycloak, namespace: {{ .Values.identityNamespace }}}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: keycloak, app.kubernetes.io/instance: keycloak}

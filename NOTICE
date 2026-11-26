@@ -1,0 +1,12 @@
+Streamforge
+Copyright 2026 Streamforge contributors
+
+This repository's original source code is licensed under the Apache License,
+Version 2.0. Container builds include independently licensed third-party
+components, including Apache Kafka, Debezium, Apache Camel, Quarkus, the Aiven
+S3 connector and AWS SDK for Java. Their licenses, notices, trademarks and
+subscription/support conditions remain applicable. Preserve upstream notices
+when distributing built images. Red Hat product names identify dependencies
+and do not imply certification of this project or its custom connector.
+
+The order dashboard includes the Red Hat Keycloak JavaScript adapter (Apache-2.0). Its license accompanies the vendored module.

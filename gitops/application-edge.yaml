@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: streamforge-edge
+  namespace: argocd
+  # Explicit lifecycle: deleting this Application does not cascade into identity resources.
+spec:
+  project: streamforge
+  sources:
+    - repoURL: https://github.com/example/streamforge.git
+      targetRevision: REPLACE_WITH_RELEASE_COMMIT
+      path: charts/streamforge-edge
+      helm:
+        releaseName: streamforge-edge
+        valueFiles:
+          - $values/environments/production/edge-values.yaml
+    - repoURL: https://git.example.invalid/platform/streamforge-environments.git
+      targetRevision: REPLACE_WITH_ENVIRONMENT_COMMIT
+      ref: values
+  destination:
+    server: https://api.cluster.example.invalid:6443
+    namespace: streamforge
+  syncPolicy:
+    # Creation is manual; after review enable automated.selfHeal. Never automate data deletion.
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - PruneLast=true
+      - FailOnSharedResource=true
+    # Namespace labels and mesh enrollment are managed by the chart's Namespace.
+    retry:
+      limit: 5
+      backoff: {duration: 10s, factor: 2, maxDuration: 3m}

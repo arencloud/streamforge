@@ -1,0 +1,1 @@
+{"private":true,"dependencies":{"@redhat/keycloak-js":"26.2.0"},"scripts":{"build":"node vendor.cjs"}}

@@ -1,0 +1,102 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: streamforge-edge-proxies}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: gateway.networking.k8s.io/gateway-name
+        operator: In
+        values: [{{ .Values.gatewayName }}, {{ .Values.dashboardWaypoint }}]
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{protocol: TCP, port: 443}]
+    - from: [{podSelector: {}}]
+      ports: [{protocol: TCP, port: 15008}, {protocol: TCP, port: 15021}]
+  egress:
+    - to: [{podSelector: {}}]
+      ports: [{protocol: TCP, port: 8080}, {protocol: TCP, port: 15008}, {protocol: TCP, port: 15021}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.identityNamespace }}}}}]
+      ports: [{protocol: TCP, port: 8080}, {protocol: TCP, port: 15008}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.authorinoNamespace }}}}}]
+      ports: [{protocol: TCP, port: 50051}, {protocol: TCP, port: 8081}, {protocol: TCP, port: 8082}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.controlPlaneNamespace }}}}}]
+      ports: [{protocol: TCP, port: 15012}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.certificateNamespace }}}}}]
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]
+---
+# Istio's Wasm agent fetches the pinned OCI artifact and its CDN redirects.
+# Public HTTPS egress is limited to the ingress proxy, never the application.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: streamforge-coraza-fetch}
+spec:
+  podSelector: {matchLabels: {gateway.networking.k8s.io/gateway-name: {{ .Values.gatewayName }}}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: {{ ternary "2000::/3" "0.0.0.0/0" .Values.network.preferIPv6 | quote }}}
+      ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: {name: streamforge-edge-https}
+spec:
+  selector: {matchLabels: {gateway.networking.k8s.io/gateway-name: {{ .Values.gatewayName }}}}
+  action: ALLOW
+  rules:
+    - to: [{operation: {ports: ["443"]}}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: identity-default-deny, namespace: {{ .Values.identityNamespace }}}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: identity-egress, namespace: {{ .Values.identityNamespace }}}
+spec:
+  # Realm import jobs need the same database and DNS access as Keycloak.
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}}]
+      ports: [{protocol: TCP, port: 53}, {protocol: UDP, port: 53}, {protocol: TCP, port: 5353}, {protocol: UDP, port: 5353}]
+    - to:
+        {{- range .Values.network.postgresCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: {{ .Values.network.postgresPort }}}]
+    - to: [{podSelector: {}}]
+      ports: [{protocol: TCP, port: 8080}, {protocol: TCP, port: 15008}, {protocol: TCP, port: 7800}, {protocol: TCP, port: 57800}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: identity-ingress, namespace: {{ .Values.identityNamespace }}}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace }}}}
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.authorinoNamespace }}}}
+      ports: [{protocol: TCP, port: 15008}, {protocol: TCP, port: 8080}]
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.operatorNamespace }}}}
+        - ipBlock: {cidr: 169.254.7.127/32}
+        - ipBlock: {cidr: "fd16:9254:7127:1337:ffff:ffff:ffff:ffff/128"}
+      ports: [{protocol: TCP, port: 9000}, {protocol: TCP, port: 15021}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: identity-waypoint-control-plane, namespace: {{ .Values.identityNamespace }}}
+spec:
+  podSelector: {matchLabels: {gateway.networking.k8s.io/gateway-name: {{ .Values.identityWaypoint }}}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.controlPlaneNamespace }}}}}]
+      ports: [{protocol: TCP, port: 15012}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.mesh.certificateNamespace }}}}}]
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]

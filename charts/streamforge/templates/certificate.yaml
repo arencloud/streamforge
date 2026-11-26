@@ -1,0 +1,26 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kafka-listener
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  secretName: kafka-listener-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    encoding: PKCS8
+    algorithm: RSA
+    size: 3072
+    rotationPolicy: Always
+  usages: [digital signature, key encipherment, server auth]
+  issuerRef:
+    name: {{ .Values.issuer }}
+    kind: ClusterIssuer
+    group: cert-manager.io
+  dnsNames:
+    - {{ .Values.clusterName }}-kafka-bootstrap
+    - {{ .Values.clusterName }}-kafka-bootstrap.{{ .Release.Namespace }}.svc
+    - {{ .Values.clusterName }}-kafka-bootstrap.{{ .Release.Namespace }}.svc.cluster.local
+    - "*.{{ .Values.clusterName }}-kafka-brokers.{{ .Release.Namespace }}.svc"
+    - "*.{{ .Values.clusterName }}-kafka-brokers.{{ .Release.Namespace }}.svc.cluster.local"

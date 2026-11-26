@@ -1,0 +1,72 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnector
+metadata:
+  name: postgres-orders
+  labels:
+    strimzi.io/cluster: connect-source
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  class: io.debezium.connector.postgresql.PostgresConnector
+  tasksMax: 1
+  autoRestart: {enabled: true, maxRestarts: 10}
+  config:
+    database.hostname: "${env:PG_HOST}"
+    database.port: "${env:PG_PORT}"
+    database.dbname: "${env:PG_DATABASE}"
+    database.user: "${env:PG_USER}"
+    database.password: "${env:PG_PASSWORD}"
+    database.sslmode: verify-full
+    database.sslrootcert: /mnt/postgres-ca/ca.crt
+    plugin.name: pgoutput
+    slot.name: {{ .Values.postgres.slot | quote }}
+    slot.drop.on.stop: false
+    publication.name: {{ .Values.postgres.publication | quote }}
+    publication.autocreate.mode: disabled
+    table.include.list: {{ .Values.postgres.table | replace "." "\\." | quote }}
+    topic.prefix: {{ .Values.postgres.topicPrefix | quote }}
+    heartbeat.interval.ms: 10000
+    heartbeat.action.query: "UPDATE public.streamforge_heartbeat SET ts=now() WHERE id=1"
+    heartbeat.topics.prefix: __debezium-heartbeat
+    snapshot.mode: initial
+    tombstones.on.delete: false
+    # Delete events retain op=d, before and after=null. No unwrap SMT loses the envelope.
+    provide.transaction.metadata: false
+    errors.tolerance: none
+    errors.log.enable: false
+    errors.log.include.messages: false
+---
+{{- if has .Values.mode (list "aiven" "both" "all") }}
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnector
+metadata:
+  name: aiven-s3
+  labels:
+    strimzi.io/cluster: connect-aiven
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  class: io.aiven.kafka.connect.s3.AivenKafkaConnectS3SinkConnector
+  tasksMax: 3
+  autoRestart: {enabled: true, maxRestarts: 10}
+  config:
+    topics: {{ .Values.postgres.topic | quote }}
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: org.apache.kafka.connect.storage.StringConverter
+    aws.access.key.id: "${env:AWS_ACCESS_KEY_ID}"
+    aws.secret.access.key: "${env:AWS_SECRET_ACCESS_KEY}"
+    aws.s3.bucket.name: "${env:S3_BUCKET}"
+    aws.s3.region: "${env:S3_REGION}"
+    aws.s3.endpoint: "${env:S3_ENDPOINT}"
+    # Aiven 3.4.4 forces path-style access when a custom endpoint is set.
+    # Aiven supports a literal prefix in file.name.template.
+    file.name.template: {{ printf "%s{{topic}}/{{partition}}/{{start_offset}}.jsonl" .Values.s3.aivenPrefix | quote }}
+    format.output.type: jsonl
+    format.output.fields: key,value,offset,timestamp
+    format.output.fields.value.encoding: none
+    file.compression.type: none
+    file.max.records: 1000
+    errors.tolerance: none
+    errors.log.enable: false
+    errors.log.include.messages: false
+{{- end }}
